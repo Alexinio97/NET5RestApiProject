@@ -1,0 +1,9 @@
+﻿################################################################################
+# This .gitignore file was automatically created by Microsoft(R) Visual Studio.
+################################################################################
+
+/Catalog/bin/Debug/net5.0
+/Catalog/.vs/Catalog
+/Catalog/Configuration/MongoDbConfig.cs
+/.vs
+/Catalog/obj
