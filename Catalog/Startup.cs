@@ -1,21 +1,20 @@
 using Catalog.Configuration;
 using Catalog.Repositories;
 using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Hosting;
-using Microsoft.AspNetCore.HttpsPolicy;
-using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Logging;
 using Microsoft.OpenApi.Models;
 using MongoDB.Bson.Serialization;
 using MongoDB.Bson.Serialization.Serializers;
 using MongoDB.Driver;
 using System;
-using System.Collections.Generic;
 using System.Linq;
-using System.Threading.Tasks;
+using System.Net.Mime;
+using System.Text.Json;
 
 
 //docker run -d --rm --name mongo -p 27017:27017 -v mongodbData:/data/db mongo - start docker container that contains the database
@@ -35,7 +34,10 @@ namespace Catalog
         public void ConfigureServices(IServiceCollection services)
         {
 
-            services.AddControllers();
+            services.AddControllers(options =>
+            {
+                options.SuppressAsyncSuffixInActionNames = false;
+            });
             services.AddSwaggerGen(c =>
             {
                 c.SwaggerDoc("v1", new OpenApiInfo { Title = "Catalog", Version = "v1" });
@@ -44,14 +46,22 @@ namespace Catalog
             BsonSerializer.RegisterSerializer(new GuidSerializer(MongoDB.Bson.BsonType.String));
             BsonSerializer.RegisterSerializer(new DateTimeOffsetSerializer(MongoDB.Bson.BsonType.String));
 
+            var mongoDbConfig = Configuration.GetSection(nameof(MongoDbConfig))
+                            .Get<MongoDbConfig>();
+
             services.AddSingleton<IMongoClient>(serviceProvider =>
             {
-                var config = Configuration.GetSection(nameof(MongoDbConfig))
-                            .Get<MongoDbConfig>();
-                return new MongoClient(config.ConnectionString);
-
+                return new MongoClient(mongoDbConfig.ConnectionString);
             });
             services.AddSingleton<IItemsRepository,MongoDbItemsRepo>();
+
+            // needs middleware
+            services.AddHealthChecks()
+                .AddMongoDb(
+                            mongoDbConfig.ConnectionString,
+                            name: "mongodb health", 
+                            timeout: TimeSpan.FromSeconds(3),
+                            tags: new[] { "ready" });
         }
 
         // This method gets called by the runtime. Use this method to configure the HTTP request pipeline.
@@ -73,6 +83,36 @@ namespace Catalog
             app.UseEndpoints(endpoints =>
             {
                 endpoints.MapControllers();
+                endpoints.MapHealthChecks("/health/ready", new HealthCheckOptions
+                {
+                     Predicate = (check) => check.Tags.Contains("ready"),
+                     ResponseWriter = async(context,report) =>
+                     {
+                         var result = JsonSerializer.Serialize(
+                             new
+                             {
+                                 status = report.Status.ToString(),
+                                 checks = report.Entries.Select(entry => new
+                                 {
+                                     name = entry.Key,
+                                     status = entry.Value.Status.ToString(),
+                                     exception = entry.Value.Exception != null ?
+                                                            entry.Value.Exception.Message : "none",
+                                     duration = entry.Value.Duration.ToString()
+                                 })
+                             }
+                         );
+                         // format the output
+                         context.Response.ContentType = MediaTypeNames.Application.Json;
+                         await context.Response.WriteAsync(result);
+                     }
+                     
+                }); //middleware for healthChecks
+                endpoints.MapHealthChecks("/health/live", new HealthCheckOptions
+                {
+                    Predicate = (_) => false // exclude every check including the one above
+                }); //middleware for healthChecks
+
             });
         }
     }
